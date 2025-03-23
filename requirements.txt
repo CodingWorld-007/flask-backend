@@ -3,4 +3,3 @@ flask_cors
 requests
 GitPython
 gunicorn
-nginx
