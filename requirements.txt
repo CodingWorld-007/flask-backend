@@ -1,5 +1,3 @@
 Flask
-flask_cors
 requests
-GitPython
-gunicorn
+python-dotenv
