@@ -66,6 +66,7 @@ def update_attendance(class_name, student_id, student_name, ip, vpn_status, gps_
     """Update attendance, ensuring no duplicate Student ID or IP."""
     existing_ids, existing_ips, sha, defaulters = get_existing_entries(class_name)
     
+    # 🚨 Block duplicate student IDs or IPs
     if student_id in existing_ids or ip in existing_ips:
         if student_id in defaulters:
             defaulters[student_id] += 1
@@ -79,24 +80,32 @@ def update_attendance(class_name, student_id, student_name, ip, vpn_status, gps_
     current_time = datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
     new_entry = f"{student_id}, {student_name}, {current_time}, {vpn_status}, {ip}\n"
     
+    # 🚀 Fetch existing data properly
     existing_data = "Student ID, Name, Date, Time, VPN Used, IP Address\n"
-    for sid in existing_ids:
-        existing_data += f"{sid}\n"
-    updated_data = existing_data + new_entry
-    
+    try:
+        response = requests.get(url, headers={"Authorization": f"token {GITHUB_TOKEN}"}, timeout=5)
+        if response.status_code == 200:
+            content = response.json()
+            file_data = base64.b64decode(content["content"]).decode("utf-8")
+            existing_data += "\n".join(file_data.strip().split("\n")[1:]) + "\n"  # Append existing records
+    except requests.RequestException:
+        pass  # If file not found, start fresh
+
+    updated_data = existing_data + new_entry  # Properly merge old and new entries
     encoded_data = base64.b64encode(updated_data.encode("utf-8")).decode("utf-8")
-    
+
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     payload = {"message": f"Updated attendance for {class_name}", "content": encoded_data, "branch": "main"}
     if sha:
-        payload["sha"] = sha
-    
+        payload["sha"] = sha  # Ensure correct file updates
+
     try:
         response = requests.put(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
         return response.status_code in [200, 201], defaulters
     except requests.RequestException:
         return False, defaulters
+
 
 @app.route("/submit_attendance", methods=["POST"])
 def submit_attendance():
