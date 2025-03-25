@@ -17,94 +17,81 @@ IPINFO_TOKEN = os.getenv("IPINFO_TOKEN")
 
 GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_USERNAME}/{REPO_NAME}/contents"
 
+
 def is_vpn(ip):
     """Detect if a VPN or Proxy is being used."""
     try:
         response = requests.get(f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}", timeout=5)
         response.raise_for_status()
         data = response.json()
-        return "Yes" if data.get("privacy", {}).get("vpn") or data.get("privacy", {}).get("proxy") else "No"
+
+        if "bogon" in data or data.get("privacy", {}).get("vpn") or data.get("privacy", {}).get("proxy"):
+            return "Yes"
+        return "No"
     except requests.RequestException:
         return "Unknown"
+
 
 def get_existing_entries(class_name):
     """Fetch attendance data and return existing student IDs and IPs."""
     file_path = f"attendance_{class_name}.csv"
     url = f"{GITHUB_API_BASE}/{file_path}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-    
+
     try:
         response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 404:
-            return set(), set(), None, {}
-        
+            return set(), set(), None  # No file yet
+
         response.raise_for_status()
         content = response.json()
-        sha = content.get("sha")
+        sha = content.get("sha")  # File SHA for updates
         file_data = base64.b64decode(content["content"]).decode("utf-8")
-        
+
         existing_ids, existing_ips = set(), set()
-        defaulters = {}
-        
-        lines = file_data.strip().split("\n")[1:]
+        lines = file_data.strip().split("\n")[1:]  # Skip header
         for line in lines:
             parts = line.split(", ")
             if len(parts) >= 5:
-                sid, ip = parts[0].strip(), parts[4].strip()
-                existing_ids.add(sid)
-                existing_ips.add(ip)
-                if sid in defaulters:
-                    defaulters[sid] += 1
-                else:
-                    defaulters[sid] = 1
-        
-        return existing_ids, existing_ips, sha, defaulters
+                existing_ids.add(parts[0].strip())  # Student ID
+                existing_ips.add(parts[4].strip())  # IP Address
+
+        return existing_ids, existing_ips, sha
     except requests.RequestException:
-        return set(), set(), None, {}
+        return set(), set(), None
+
 
 def update_attendance(class_name, student_id, student_name, ip, vpn_status, gps_status):
     """Update attendance, ensuring no duplicate Student ID or IP."""
-    existing_ids, existing_ips, sha, defaulters = get_existing_entries(class_name)
-    
-    # 🚨 Block duplicate student IDs or IPs
+    existing_ids, existing_ips, sha = get_existing_entries(class_name)
+
     if student_id in existing_ids or ip in existing_ips:
-        if student_id in defaulters:
-            defaulters[student_id] += 1
-        else:
-            defaulters[student_id] = 1
         print(f"❌ Duplicate Entry Detected: Student ID {student_id} or IP {ip}.")
-        return False, defaulters
-    
+        return False
+
     file_path = f"attendance_{class_name}.csv"
     url = f"{GITHUB_API_BASE}/{file_path}"
     current_time = datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
     new_entry = f"{student_id}, {student_name}, {current_time}, {vpn_status}, {ip}\n"
-    
-    # 🚀 Fetch existing data properly
-    existing_data = "Student ID, Name, Date, Time, VPN Used, IP Address\n"
-    try:
-        response = requests.get(url, headers={"Authorization": f"token {GITHUB_TOKEN}"}, timeout=5)
-        if response.status_code == 200:
-            content = response.json()
-            file_data = base64.b64decode(content["content"]).decode("utf-8")
-            existing_data += "\n".join(file_data.strip().split("\n")[1:]) + "\n"  # Append existing records
-    except requests.RequestException:
-        pass  # If file not found, start fresh
 
-    updated_data = existing_data + new_entry  # Properly merge old and new entries
+    existing_data = "Student ID, Name, Date, Time, VPN Used, IP Address\n"  # Default header
+    for sid in existing_ids:  # Load previous records
+        existing_data += f"{sid}\n"
+    updated_data = existing_data + new_entry
+
     encoded_data = base64.b64encode(updated_data.encode("utf-8")).decode("utf-8")
 
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     payload = {"message": f"Updated attendance for {class_name}", "content": encoded_data, "branch": "main"}
     if sha:
-        payload["sha"] = sha  # Ensure correct file updates
+        payload["sha"] = sha  # Only include SHA if file exists
 
     try:
         response = requests.put(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
-        return response.status_code in [200, 201], defaulters
+        return response.status_code in [200, 201]
     except requests.RequestException:
-        return False, defaulters
+        return False
 
 
 @app.route("/submit_attendance", methods=["POST"])
@@ -124,14 +111,13 @@ def submit_attendance():
         return jsonify({"status": "error", "message": "GPS is required"}), 403
 
     vpn_status = is_vpn(ip)
-    success, defaulters = update_attendance(class_name, student_id, student_name, ip, vpn_status, gps_status)
 
-    if success:
+    if update_attendance(class_name, student_id, student_name, ip, vpn_status, gps_status):
         return jsonify({"status": "success", "message": "Attendance recorded"})
     else:
-        return jsonify({"status": "error", "message": "Duplicate entry detected", "defaulters": defaulters}), 409
+        return jsonify({"status": "error", "message": "Duplicate entry detected"}), 409
+
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-
-
+    port = int(os.getenv("PORT", 5000))  # Railway assigns a dynamic port
+    app.run(host="0.0.0.0", port=port)
