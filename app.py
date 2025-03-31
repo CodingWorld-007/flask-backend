@@ -72,12 +72,38 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
 
     file_path = f"attendance_{class_name}.csv"
     url = f"{GITHUB_API_BASE}/{file_path}"
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
 
     new_entry = f"{student_name}, {student_roll}, {class_name}, {qr_code}, {lat}, {lng}, {time}, {vpn_status}, {gps_status}, {ip}\n"
 
     # Fetch existing data correctly
     existing_data = "Student Name, Student Roll, Class Name, QR Code, Latitude, Longitude, Time, VPN Used, GPS Status, IP Address\n"
+
+    try:
+        response = requests.get(url, headers={"Authorization": f"token {GITHUB_TOKEN}"})
+        response.raise_for_status()  # Raise an exception for bad status codes
+
+        content = response.json()
+        existing_content = base64.b64decode(content["content"]).decode("utf-8")
+
+        existing_data += existing_content
+
+    except requests.exceptions.HTTPError as http_err:
+        if http_err.response.status_code == 404:
+            print(f"File not found, creating new. {http_err}")
+            # File does not exist, so we skip the adding existing content.
+        else:
+            print(f"HTTP error occurred: {http_err}")
+            return False
+    except requests.exceptions.RequestException as err:
+        print(f"An error occurred: {err}")
+        return False
+    except KeyError as key_err:
+        print(f"A key error occurred: {key_err}")
+        return False
+    except Exception as err:
+        print(f"An unexpected error occurred: {err}")
+        return False
+
     existing_data += new_entry  # Add new entry at the bottom
 
     encoded_data = base64.b64encode(existing_data.encode("utf-8")).decode("utf-8")
@@ -106,8 +132,11 @@ def is_valid_location(lat, lng):
     min_lng, max_lng = 77.0, 78.0
     print(f"Checking location: lat={lat}, lng={lng}")
     print(f"Checking type location: lat={type(lat)}, lng={type(lng)}")
-
-    return min_lat <= float(lat) <= max_lat and min_lng <= float(lng) <= max_lng
+    try:
+        return min_lat <= float(lat) <= max_lat and min_lng <= float(lng) <= max_lng
+    except ValueError:
+        print("Error: Invalid latitude or longitude format.")
+        return False  # Or handle it in a way appropriate for your app
 
 @app.route("/submit_attendance", methods=["POST"])
 def submit_attendance():
@@ -125,16 +154,21 @@ def submit_attendance():
 
     if not student_name or not student_roll or not class_name or not qr_code or not lat or not lng or not time:
         return jsonify({"status": "error", "message": "Missing required fields"}), 400
-    
+
     if not is_valid_location(lat, lng):
         return jsonify({"status": "error", "message": "Invalid location"}), 403
 
     vpn_status = is_vpn(ip)
+    try:
+        float_lat = float(lat)
+        float_lng = float(lng)
+        if update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, float_lat, float_lng, time):
+            return jsonify({"status": "success", "message": "Attendance recorded"}), 200
+        else:
+            return jsonify({"status": "error", "message": "Duplicate entry detected"}), 409
+    except ValueError:
+        return jsonify({"status": "error", "message": "Invalid latitude or longitude format."}), 400
 
-    if update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, lat, lng, time):
-        return jsonify({"status": "success", "message": "Attendance recorded"}), 200
-    else:
-        return jsonify({"status": "error", "message": "Duplicate entry detected"}), 409
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
