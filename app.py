@@ -158,17 +158,17 @@ def submit_attendance():
     try:
         float_lat = float(lat)
         float_lng = float(lng)
-        if not is_valid_location(float_lat, float_lng):
-            return jsonify({"status": "error", "message": "Invalid location"}), 403
-        
-        vpn_status = is_vpn(ip)
-        if update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, float_lat, float_lng, time):
-            return jsonify({"status": "success", "message": "Attendance recorded"}), 200
-        else:
-            return jsonify({"status": "error", "message": "Duplicate entry detected"}), 409
     except ValueError:
         return jsonify({"status": "error", "message": "Invalid latitude or longitude format."}), 400
 
+    if not is_valid_location(float_lat, float_lng):
+        return jsonify({"status": "error", "message": "Invalid location"}), 403
 
+    vpn_status = is_vpn(ip)
+    if update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, float_lat, float_lng, time):
+        return jsonify({"status": "success", "message": "Attendance recorded"}), 200
+    else:
+        return jsonify({"status": "error", "message": "Duplicate entry detected"}), 409
+        
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
