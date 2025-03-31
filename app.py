@@ -154,14 +154,14 @@ def submit_attendance():
 
     if not student_name or not student_roll or not class_name or not qr_code or not lat or not lng or not time:
         return jsonify({"status": "error", "message": "Missing required fields"}), 400
-
-    if not is_valid_location(lat, lng):
-        return jsonify({"status": "error", "message": "Invalid location"}), 403
-
-    vpn_status = is_vpn(ip)
+    
     try:
         float_lat = float(lat)
         float_lng = float(lng)
+        if not is_valid_location(float_lat, float_lng):
+            return jsonify({"status": "error", "message": "Invalid location"}), 403
+        
+        vpn_status = is_vpn(ip)
         if update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, float_lat, float_lng, time):
             return jsonify({"status": "success", "message": "Attendance recorded"}), 200
         else:
@@ -172,4 +172,3 @@ def submit_attendance():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
-
