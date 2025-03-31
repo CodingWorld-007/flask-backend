@@ -18,7 +18,6 @@ BRANCH_NAME = os.getenv("BRANCH_NAME", "main")
 
 GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_USERNAME}/{REPO_NAME}/contents"
 
-
 def is_vpn(ip):
     """Detect VPN or Proxy usage via IPInfo API."""
     if not IPINFO_TOKEN:
@@ -35,7 +34,6 @@ def is_vpn(ip):
     except requests.RequestException:
         return "Unknown"
 
-
 def get_existing_entries(class_name):
     """Fetch attendance data from GitHub and return existing student IDs and IPs."""
     file_path = f"attendance_{class_name}.csv"
@@ -45,42 +43,41 @@ def get_existing_entries(class_name):
     try:
         response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 404:
-            return set(), set(), None  # No file exists yet
+            return set(), None  # No file exists yet
 
         response.raise_for_status()
         content = response.json()
         sha = content.get("sha")  # Required for updating the file
         file_data = base64.b64decode(content["content"]).decode("utf-8")
 
-        existing_ids, existing_ips = set(), set()
+        existing_ids = set()
         lines = file_data.strip().split("\n")[1:]  # Skip header
         for line in lines:
             parts = line.split(", ")
-            if len(parts) >= 6:
-                existing_ids.add(parts[0].strip())  # Student ID
-                existing_ips.add(parts[5].strip())  # IP Address
+            if len(parts) >= 9:
+                existing_ids.add(parts[1].strip())  # Student Roll
 
-        return existing_ids, existing_ips, sha
+        return existing_ids, sha
     except requests.RequestException:
-        return set(), set(), None
+        return set(), None
 
 
-def update_attendance(class_name, student_id, student_name, ip, vpn_status, gps_status):
+def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, lat, lng, time):
     """Update attendance while preventing duplicates."""
-    existing_ids, existing_ips, sha = get_existing_entries(class_name)
+    existing_rolls, sha = get_existing_entries(class_name)
 
-    if student_id in existing_ids or ip in existing_ips:
-        print(f"❌ Duplicate Entry Detected: Student ID {student_id} or IP {ip}.")
+    if student_roll in existing_rolls:
+        print(f"❌ Duplicate Entry Detected: Student Roll {student_roll}.")
         return False
 
     file_path = f"attendance_{class_name}.csv"
     url = f"{GITHUB_API_BASE}/{file_path}"
     current_time = datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
 
-    new_entry = f"{student_id}, {student_name}, {current_time}, {vpn_status}, {gps_status}, {ip}\n"
+    new_entry = f"{student_name}, {student_roll}, {class_name}, {qr_code}, {lat}, {lng}, {time}, {vpn_status}, {gps_status}, {ip}\n"
 
     # Fetch existing data correctly
-    existing_data = "Student ID, Name, Date, Time, VPN Used, GPS Status, IP Address\n"
+    existing_data = "Student Name, Student Roll, Class Name, QR Code, Latitude, Longitude, Time, VPN Used, GPS Status, IP Address\n"
     existing_data += new_entry  # Add new entry at the bottom
 
     encoded_data = base64.b64encode(existing_data.encode("utf-8")).decode("utf-8")
@@ -102,26 +99,40 @@ def update_attendance(class_name, student_id, student_name, ip, vpn_status, gps_
         print(f"GitHub API Error: {e}")
         return False
 
+def is_valid_location(lat, lng):
+    """Check if the location is within a valid range."""
+    # Example: Check if within a certain latitude and longitude range
+    min_lat, max_lat = 28.0, 29.0
+    min_lng, max_lng = 77.0, 78.0
+
+    return min_lat <= float(lat) <= max_lat and min_lng <= float(lng) <= max_lng
 
 @app.route("/submit_attendance", methods=["POST"])
 def submit_attendance():
     """API endpoint to handle attendance submission."""
     data = request.json
-    student_id = data.get("student_id")
     student_name = data.get("student_name")
+    student_roll = data.get("student_roll")
     class_name = data.get("class_name")
+    qr_code = data.get("qr_code")
+    lat = data.get("lat")
+    lng = data.get("lng")
+    time = data.get("time")
     ip = request.remote_addr
     gps_status = data.get("gps_status", "No")
 
-    if not student_id or not student_name or not class_name:
+    if not student_name or not student_roll or not class_name or not qr_code or not lat or not lng or not time:
         return jsonify({"status": "error", "message": "Missing required fields"}), 400
 
     if gps_status == "No":
         return jsonify({"status": "error", "message": "GPS is required"}), 403
+    
+    if not is_valid_location(lat, lng):
+        return jsonify({"status": "error", "message": "Invalid location"}), 403
 
     vpn_status = is_vpn(ip)
 
-    if update_attendance(class_name, student_id, student_name, ip, vpn_status, gps_status):
+    if update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, lat, lng, time):
         return jsonify({"status": "success", "message": "Attendance recorded"}), 200
     else:
         return jsonify({"status": "error", "message": "Duplicate entry detected"}), 409
