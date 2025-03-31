@@ -1,7 +1,7 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, abort
 import requests
-import base64
 import os
+import base64
 import datetime
 from dotenv import load_dotenv
 
@@ -104,6 +104,8 @@ def is_valid_location(lat, lng):
     # Example: Check if within a certain latitude and longitude range
     min_lat, max_lat = 28.0, 29.0
     min_lng, max_lng = 77.0, 78.0
+    print(f"Checking location: lat={lat}, lng={lng}")
+    print(f"Checking type location: lat={type(lat)}, lng={type(lng)}")
 
     return min_lat <= float(lat) <= max_lat and min_lng <= float(lng) <= max_lng
 
@@ -119,13 +121,10 @@ def submit_attendance():
     lng = data.get("lng")
     time = data.get("time")
     ip = request.remote_addr
-    gps_status = data.get("gps_status", "No")
+    gps_status = data.get("gps_status")
 
     if not student_name or not student_roll or not class_name or not qr_code or not lat or not lng or not time:
         return jsonify({"status": "error", "message": "Missing required fields"}), 400
-
-    if gps_status == "No":
-        return jsonify({"status": "error", "message": "GPS is required"}), 403
     
     if not is_valid_location(lat, lng):
         return jsonify({"status": "error", "message": "Invalid location"}), 403
@@ -136,7 +135,6 @@ def submit_attendance():
         return jsonify({"status": "success", "message": "Attendance recorded"}), 200
     else:
         return jsonify({"status": "error", "message": "Duplicate entry detected"}), 409
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
