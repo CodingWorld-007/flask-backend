@@ -14,7 +14,7 @@ REPO_NAME = os.getenv("REPO_NAME")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 IPINFO_TOKEN = os.getenv("IPINFO_TOKEN")
 BRANCH_NAME = os.getenv("BRANCH_NAME", "main")
-RAILWAY_TOKEN = os.getenv("VALID_API_TOKEN") # NEW
+RAILWAY_TOKEN = os.getenv("RAILWAY_TOKEN") # NEW
 GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_USERNAME}/{REPO_NAME}/contents"
 
 # Error handling
