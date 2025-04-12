@@ -154,7 +154,7 @@ def validate_token(auth_header):
 
     token = auth_header.split(' ')[1]
 
-    if token != VALID_API_TOKEN:
+    if token != RAILWAY_TOKEN:
         raise InvalidUsage('Invalid API token', 401)
 
 
