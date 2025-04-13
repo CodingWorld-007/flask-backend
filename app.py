@@ -2,9 +2,13 @@ from flask import Flask, request, jsonify, abort
 import requests
 import os
 import base64
+import logging
 from dotenv import load_dotenv
 
 app = Flask(__name__)
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)  # Set to DEBUG for more detail
 
 # Load environment variables
 load_dotenv()
@@ -14,8 +18,9 @@ REPO_NAME = os.getenv("REPO_NAME")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 IPINFO_TOKEN = os.getenv("IPINFO_TOKEN")
 BRANCH_NAME = os.getenv("BRANCH_NAME", "main")
-RAILWAY_TOKEN = os.getenv("RAILWAY_TOKEN") # NEW
+RAILWAY_TOKEN = os.getenv("RAILWAY_TOKEN")  # NEW
 GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_USERNAME}/{REPO_NAME}/contents"
+
 
 # Error handling
 class InvalidUsage(Exception):
@@ -44,6 +49,7 @@ def handle_invalid_usage(error):
 def is_vpn(ip):
     """Detect VPN or Proxy usage via IPInfo API."""
     if not IPINFO_TOKEN:
+        logging.warning("IPINFO_TOKEN is missing, VPN detection will be Unknown")
         return "Unknown"  # If the token is missing, we can't check
 
     try:
@@ -54,7 +60,8 @@ def is_vpn(ip):
         if data.get("bogon") or data.get("privacy", {}).get("vpn") or data.get("privacy", {}).get("proxy"):
             return "Yes"
         return "No"
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logging.error(f"Error checking VPN status for IP {ip}: {e}")
         return "Unknown"
 
 
@@ -69,6 +76,7 @@ def get_existing_entries(class_name):
         response.raise_for_status()
 
         if response.status_code == 404:
+            logging.info(f"File for class {class_name} not found on GitHub.")
             return set(), None  # No file exists yet
         content = response.json()
         sha = content.get("sha")
@@ -83,6 +91,7 @@ def get_existing_entries(class_name):
 
         return existing_rolls, sha
     except requests.RequestException as e:
+        logging.error(f"Error fetching data from GitHub: {e}")
         raise InvalidUsage(f"Error fetching data from GitHub: {e}", 500)
 
 
@@ -103,7 +112,7 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
     try:
         response = requests.get(url, headers={"Authorization": f"token {GITHUB_TOKEN}"})
         if response.status_code == 404:
-            print("File not found, creating new.")
+            logging.info(f"File not found, creating new one.")
             # File does not exist, so we skip the adding existing content.
         else:
             response.raise_for_status()
@@ -112,6 +121,7 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
             existing_data += existing_content
 
     except requests.RequestException as e:
+        logging.error(f"Error fetching or creating file on GitHub: {e}")
         raise InvalidUsage(f"Error fetching or creating file on GitHub: {e}", 500)
 
     existing_data += new_entry  # Add new entry at the bottom
@@ -131,6 +141,7 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
         response.raise_for_status()
         return True
     except requests.RequestException as e:
+        logging.error(f"GitHub API Error: {e}")
         raise InvalidUsage(f"GitHub API Error: {e}", 500)
 
 
@@ -138,10 +149,9 @@ def is_valid_location(lat, lng):
     """Check if the location is within a valid range."""
     min_lat, max_lat = 28.0, 29.0
     min_lng, max_lng = 77.0, 78.0
-    try:
-        return min_lat <= float(lat) <= max_lat and min_lng <= float(lng) <= max_lng
-    except ValueError:
-        raise InvalidUsage("Invalid latitude or longitude format.", 400)
+    logging.debug(f"Checking location: lat={lat}, lng={lng}")
+    logging.debug(f"Valid range: min_lat={min_lat}, max_lat={max_lat}, min_lng={min_lng}, max_lng={max_lng}")
+    return min_lat <= lat <= max_lat and min_lng <= lng <= max_lng
 
 
 def validate_token(auth_header):
@@ -155,17 +165,22 @@ def validate_token(auth_header):
     token = auth_header.split(' ')[1]
 
     if token != RAILWAY_TOKEN:
+        logging.warning(f"Invalid API token received: '{token}', expected: '{RAILWAY_TOKEN}'")
         raise InvalidUsage('Invalid API token', 401)
 
 
 @app.route("/submit_attendance", methods=["POST"])
 def submit_attendance():
     """API endpoint to handle attendance submission."""
+    logging.debug("Received a request to /submit_attendance")
+
     # Validate API token
     auth_header = request.headers.get('Authorization')
     validate_token(auth_header)
 
     data = request.json
+    logging.debug(f"Received data: {data}")
+
     student_name = data.get("student_name")
     student_roll = data.get("student_roll")
     class_name = data.get("class_name")
@@ -177,15 +192,20 @@ def submit_attendance():
     gps_status = data.get("gps_status")
 
     if not student_name or not student_roll or not class_name or not qr_code or not lat or not lng or not time:
+        logging.warning("Missing required fields in request")
         raise InvalidUsage("Missing required fields", 400)
 
     try:
         float_lat = float(lat)
         float_lng = float(lng)
     except ValueError:
+        logging.warning(f"Invalid latitude or longitude format received: lat='{lat}', lng='{lng}'")
         raise InvalidUsage("Invalid latitude or longitude format.", 400)
 
+    logging.debug(f"Received latitude: {float_lat}, longitude: {float_lng}")
+
     if not is_valid_location(float_lat, float_lng):
+        logging.warning(f"Invalid location: lat={float_lat}, lng={float_lng}")
         raise InvalidUsage("Invalid location", 403)
 
     vpn_status = is_vpn(ip)
@@ -195,6 +215,9 @@ def submit_attendance():
         return jsonify({"status": "success", "message": "Attendance recorded"}), 200
     except InvalidUsage as e:
         raise e
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+        raise InvalidUsage("An unexpected error occurred", 500)
 
 
 if __name__ == "__main__":
