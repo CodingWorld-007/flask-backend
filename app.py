@@ -3,6 +3,7 @@ import requests
 import os
 import base64
 import logging
+import math  # Import the math module
 from dotenv import load_dotenv
 
 app = Flask(__name__)
@@ -18,7 +19,9 @@ REPO_NAME = os.getenv("REPO_NAME")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 IPINFO_TOKEN = os.getenv("IPINFO_TOKEN")
 BRANCH_NAME = os.getenv("BRANCH_NAME", "main")
-RAILWAY_TOKEN = os.getenv("RAILWAY_TOKEN")  # NEW
+RAILWAY_TOKEN = os.getenv("RAILWAY_TOKEN")
+FIREBASE_SECRET = os.getenv("FIREBASE_SECRET")  
+FIREBASE_URL = os.getenv("FIREBASE_URL")  
 GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_USERNAME}/{REPO_NAME}/contents"
 
 
@@ -50,7 +53,7 @@ def is_vpn(ip):
     """Detect VPN or Proxy usage via IPInfo API."""
     if not IPINFO_TOKEN:
         logging.warning("IPINFO_TOKEN is missing, VPN detection will be Unknown")
-        return "Unknown"  # If the token is missing, we can't check
+        return "Unknown"  
 
     try:
         response = requests.get(f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}", timeout=5)
@@ -73,11 +76,12 @@ def get_existing_entries(class_name):
 
     try:
         response = requests.get(url, headers=headers, timeout=5)
-        response.raise_for_status()
-
+        logging.debug(f"get_existing_entries(): Response from GitHub: {response.status_code}")
         if response.status_code == 404:
             logging.info(f"File for class {class_name} not found on GitHub.")
             return set(), None  # No file exists yet
+
+        response.raise_for_status()
         content = response.json()
         sha = content.get("sha")
         file_data = base64.b64decode(content["content"]).decode("utf-8")
@@ -94,6 +98,28 @@ def get_existing_entries(class_name):
         logging.error(f"Error fetching data from GitHub: {e}")
         raise InvalidUsage(f"Error fetching data from GitHub: {e}", 500)
 
+def create_new_file(class_name, new_entry):
+    """Create a new attendance CSV file on GitHub."""
+    file_path = f"attendance_{class_name}.csv"
+    url = f"{GITHUB_API_BASE}/{file_path}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    data = "Student Name, Student Roll, Class Name, QR Code, Latitude, Longitude, Time, VPN Used, GPS Status, IP Address\n" + new_entry
+    encoded_data = base64.b64encode(data.encode("utf-8")).decode("utf-8")
+
+    payload = {
+        "message": f"Created attendance file for {class_name}",
+        "content": encoded_data,
+        "branch": BRANCH_NAME,
+    }
+
+    try:
+        response = requests.put(url, headers=headers, json=payload, timeout=10)
+        response.raise_for_status()
+        logging.info(f"Created new file for class {class_name} on GitHub.")
+        return True
+    except requests.RequestException as e:
+        logging.error(f"Error creating file on GitHub: {e}")
+        raise InvalidUsage(f"Error creating file on GitHub: {e}", 500)
 
 def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, lat, lng, time):
     """Update attendance while preventing duplicates."""
@@ -102,27 +128,28 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
     if student_roll in existing_rolls:
         raise InvalidUsage("Duplicate entry detected", 409)
 
-    file_path = f"attendance_{class_name}.csv"
-    url = f"{GITHUB_API_BASE}/{file_path}"
     new_entry = f"{student_name}, {student_roll}, {class_name}, {qr_code}, {lat}, {lng}, {time}, {vpn_status}, {gps_status}, {ip}\n"
 
+    if sha is None:  # File doesn't exist, so create a new one
+        create_new_file(class_name, new_entry)
+        return True
+
+    file_path = f"attendance_{class_name}.csv"
+    url = f"{GITHUB_API_BASE}/{file_path}"
+    
     # Fetch existing data correctly
     existing_data = "Student Name, Student Roll, Class Name, QR Code, Latitude, Longitude, Time, VPN Used, GPS Status, IP Address\n"
 
     try:
         response = requests.get(url, headers={"Authorization": f"token {GITHUB_TOKEN}"})
-        if response.status_code == 404:
-            logging.info(f"File not found, creating new one.")
-            # File does not exist, so we skip the adding existing content.
-        else:
-            response.raise_for_status()
-            content = response.json()
-            existing_content = base64.b64decode(content["content"]).decode("utf-8")
-            existing_data += existing_content
+        response.raise_for_status()
+        content = response.json()
+        existing_content = base64.b64decode(content["content"]).decode("utf-8")
+        existing_data += existing_content
 
     except requests.RequestException as e:
-        logging.error(f"Error fetching or creating file on GitHub: {e}")
-        raise InvalidUsage(f"Error fetching or creating file on GitHub: {e}", 500)
+        logging.error(f"Error fetching file on GitHub: {e}")
+        raise InvalidUsage(f"Error fetching file on GitHub: {e}", 500)
 
     existing_data += new_entry  # Add new entry at the bottom
     encoded_data = base64.b64encode(existing_data.encode("utf-8")).decode("utf-8")
@@ -143,15 +170,55 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
     except requests.RequestException as e:
         logging.error(f"GitHub API Error: {e}")
         raise InvalidUsage(f"GitHub API Error: {e}", 500)
+def calculate_distance(lat1, lon1, lat2, lon2):
+    """Calculate the distance between two points using the Haversine formula."""
+    R = 6371  # Radius of the Earth in kilometers
+    dLat = math.radians(lat2 - lat1)
+    dLon = math.radians(lon2 - lon1)
+    lat1 = math.radians(lat1)
+    lat2 = math.radians(lat2)
+    a = math.sin(dLat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dLon / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    distance = R * c * 1000  # Convert to meters
+    return distance
 
+
+def get_teacher_location(class_name):
+    """Fetch the teacher's location from Firebase."""
+    try:
+        url = f"{FIREBASE_URL}/locations/{class_name}.json?auth={FIREBASE_SECRET}"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()  # Raise an error for bad status codes
+        data = response.json()
+        if data:
+            return data.get("lat"), data.get("lng")
+        else:
+            return None, None
+    except requests.RequestException as e:
+        logging.error(f"Error fetching teacher location from Firebase: {e}")
+        return None, None
 
 def is_valid_location(lat, lng):
     """Check if the location is within a valid range."""
-    min_lat, max_lat = 20.0, 40.0
-    min_lng, max_lng = 70.0, 90.0
-    logging.debug(f"Checking location: lat={lat}, lng={lng}")
-    logging.debug(f"Valid range: min_lat={min_lat}, max_lat={max_lat}, min_lng={min_lng}, max_lng={max_lng}")
-    return min_lat <= lat <= max_lat and min_lng <= lng <= max_lng
+    # min_lat, max_lat = 20.0, 40.0
+    # min_lng, max_lng = 70.0, 90.0
+    # logging.debug(f"Checking location: lat={lat}, lng={lng}")
+    # logging.debug(f"Valid range: min_lat={min_lat}, max_lat={max_lat}, min_lng={min_lng}, max_lng={max_lng}")
+    # return min_lat <= lat <= max_lat and min_lng <= lng <= max_lng
+    teacher_lat, teacher_lng = get_teacher_location(request.json.get("class_name"))
+    logging.debug(f"Teacher location: lat={teacher_lat}, lng={teacher_lng}")
+
+    if teacher_lat is None or teacher_lng is None:
+        logging.warning("Teacher location not found or data incomplete.")
+        return False
+
+    distance = calculate_distance(lat, lng, teacher_lat, teacher_lng)
+    logging.debug(f"Distance from teacher: {distance} meters")
+
+    if distance > 250:
+        logging.warning("Student is too far from the class.")
+        return False
+    return True
 
 
 def validate_token(auth_header):
