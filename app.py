@@ -147,8 +147,8 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
 
 def is_valid_location(lat, lng):
     """Check if the location is within a valid range."""
-    min_lat, max_lat = 28.0, 29.0
-    min_lng, max_lng = 77.0, 78.0
+    min_lat, max_lat = 20.0, 30.0
+    min_lng, max_lng = 70.0, 80.0
     logging.debug(f"Checking location: lat={lat}, lng={lng}")
     logging.debug(f"Valid range: min_lat={min_lat}, max_lat={max_lat}, min_lng={min_lng}, max_lng={max_lng}")
     return min_lat <= lat <= max_lat and min_lng <= lng <= max_lng
