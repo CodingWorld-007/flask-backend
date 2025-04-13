@@ -18,12 +18,13 @@ GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
 REPO_NAME = os.getenv("REPO_NAME")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 IPINFO_TOKEN = os.getenv("IPINFO_TOKEN")
-BRANCH_NAME = os.getenv("BRANCH_NAME", "main")
 RAILWAY_TOKEN = os.getenv("RAILWAY_TOKEN")
-FIREBASE_SECRET = os.getenv("FIREBASE_SECRET")  
-FIREBASE_URL = os.getenv("FIREBASE_URL")  
+FIREBASE_SECRET = os.getenv("FIREBASE_SECRET")
+FIREBASE_URL = os.getenv("FIREBASE_URL")
 GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_USERNAME}/{REPO_NAME}/contents"
-
+# Constants
+DISTANCE_THRESHOLD = 250
+CSV_HEADER = "Student Name, Student Roll, Class Name, QR Code, Latitude, Longitude, Time, VPN Used, GPS Status, IP Address\n"
 
 # Error handling
 class InvalidUsage(Exception):
@@ -53,7 +54,7 @@ def is_vpn(ip):
     """Detect VPN or Proxy usage via IPInfo API."""
     if not IPINFO_TOKEN:
         logging.warning("IPINFO_TOKEN is missing, VPN detection will be Unknown")
-        return "Unknown"  
+        return "Unknown"
 
     try:
         response = requests.get(f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}", timeout=5)
@@ -71,7 +72,7 @@ def is_vpn(ip):
 def get_existing_entries(class_name):
     """Fetch attendance data from GitHub and return existing student rolls and sha."""
     file_path = f"attendance_{class_name}.csv"
-    url = f"{GITHUB_API_BASE}/{file_path}?ref={BRANCH_NAME}"
+    url = f"{GITHUB_API_BASE}/{file_path}?ref=main"
     headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
 
     try:
@@ -98,18 +99,19 @@ def get_existing_entries(class_name):
         logging.error(f"Error fetching data from GitHub: {e}")
         raise InvalidUsage(f"Error fetching data from GitHub: {e}", 500)
 
+
 def create_new_file(class_name, new_entry):
     """Create a new attendance CSV file on GitHub."""
     file_path = f"attendance_{class_name}.csv"
     url = f"{GITHUB_API_BASE}/{file_path}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    data = "Student Name, Student Roll, Class Name, QR Code, Latitude, Longitude, Time, VPN Used, GPS Status, IP Address\n" + new_entry
+    data = CSV_HEADER + new_entry
     encoded_data = base64.b64encode(data.encode("utf-8")).decode("utf-8")
 
     payload = {
         "message": f"Created attendance file for {class_name}",
         "content": encoded_data,
-        "branch": BRANCH_NAME,
+        "branch": "main"
     }
 
     try:
@@ -120,6 +122,7 @@ def create_new_file(class_name, new_entry):
     except requests.RequestException as e:
         logging.error(f"Error creating file on GitHub: {e}")
         raise InvalidUsage(f"Error creating file on GitHub: {e}", 500)
+
 
 def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, lat, lng, time):
     """Update attendance while preventing duplicates."""
@@ -136,9 +139,9 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
 
     file_path = f"attendance_{class_name}.csv"
     url = f"{GITHUB_API_BASE}/{file_path}"
-    
+
     # Fetch existing data correctly
-    existing_data = "Student Name, Student Roll, Class Name, QR Code, Latitude, Longitude, Time, VPN Used, GPS Status, IP Address\n"
+    existing_data = CSV_HEADER
 
     try:
         response = requests.get(url, headers={"Authorization": f"token {GITHUB_TOKEN}"})
@@ -158,7 +161,7 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
     payload = {
         "message": f"Updated attendance for {class_name}",
         "content": encoded_data,
-        "branch": BRANCH_NAME
+        "branch": "main"
     }
     if sha:
         payload["sha"] = sha  # Needed if file exists
@@ -170,6 +173,8 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
     except requests.RequestException as e:
         logging.error(f"GitHub API Error: {e}")
         raise InvalidUsage(f"GitHub API Error: {e}", 500)
+
+
 def calculate_distance(lat1, lon1, lat2, lon2):
     """Calculate the distance between two points using the Haversine formula."""
     R = 6371  # Radius of the Earth in kilometers
@@ -185,37 +190,38 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 
 def get_teacher_location(class_name):
     """Fetch the teacher's location from Firebase."""
+    logging.debug(f"get_teacher_location(): Fetching teacher location for class '{class_name}'")
     try:
         url = f"{FIREBASE_URL}/locations/{class_name}.json?auth={FIREBASE_SECRET}"
+        logging.debug(f"get_teacher_location(): Firebase URL: {url}")
         response = requests.get(url, timeout=5)
-        response.raise_for_status()  # Raise an error for bad status codes
+        response.raise_for_status()
         data = response.json()
+        logging.debug(f"get_teacher_location(): Data received from Firebase: {data}")
+
         if data:
             return data.get("lat"), data.get("lng")
         else:
+            logging.warning(f"get_teacher_location(): No data found for class '{class_name}'")
             return None, None
     except requests.RequestException as e:
-        logging.error(f"Error fetching teacher location from Firebase: {e}")
+        logging.error(f"get_teacher_location(): Error fetching teacher location from Firebase: {e}")
         return None, None
+
 
 def is_valid_location(lat, lng):
     """Check if the location is within a valid range."""
-    # min_lat, max_lat = 20.0, 40.0
-    # min_lng, max_lng = 70.0, 90.0
-    # logging.debug(f"Checking location: lat={lat}, lng={lng}")
-    # logging.debug(f"Valid range: min_lat={min_lat}, max_lat={max_lat}, min_lng={min_lng}, max_lng={max_lng}")
-    # return min_lat <= lat <= max_lat and min_lng <= lng <= max_lng
     teacher_lat, teacher_lng = get_teacher_location(request.json.get("class_name"))
-    logging.debug(f"Teacher location: lat={teacher_lat}, lng={teacher_lng}")
+    logging.debug(f"is_valid_location(): Teacher location: lat={teacher_lat}, lng={teacher_lng}")
 
     if teacher_lat is None or teacher_lng is None:
         logging.warning("Teacher location not found or data incomplete.")
         return False
 
     distance = calculate_distance(lat, lng, teacher_lat, teacher_lng)
-    logging.debug(f"Distance from teacher: {distance} meters")
+    logging.debug(f"is_valid_location(): Distance from teacher: {distance} meters")
 
-    if distance > 250:
+    if distance > DISTANCE_THRESHOLD:
         logging.warning("Student is too far from the class.")
         return False
     return True
