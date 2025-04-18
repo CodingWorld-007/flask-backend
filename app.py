@@ -5,6 +5,7 @@ import base64
 import logging
 import math  # Import the math module
 from dotenv import load_dotenv
+import ipaddress
 
 app = Flask(__name__)
 
@@ -49,24 +50,110 @@ def handle_invalid_usage(error):
     response.status_code = error.status_code
     return response
 
+# Global variable to hold the known VPN ranges.
+KNOWN_VPN_RANGES = []
 
 def is_vpn(ip):
-    """Detect VPN or Proxy usage via IPInfo API."""
+    """
+    Detect VPN or Proxy usage via multiple checks, including IPInfo, CGNAT bypass, and known VPN ranges.
+    """
     if not IPINFO_TOKEN:
-        logging.warning("IPINFO_TOKEN is missing, VPN detection will be Unknown")
+        logging.warning("IPINFO_TOKEN is missing, VPN detection will be limited.")
         return "Unknown"
 
     try:
+        # 1. Check for CGNAT (Bypass VPN checks if it's a CGNAT IP)
+        if ip_in_cgnat_range(ip):
+            logging.debug(f"IP {ip} is in CGNAT range. Skipping IPInfo VPN check.")
+            return "No"
+
+        # 2. IPInfo Check
+        ipinfo_data = get_ipinfo_data(ip)
+        if ipinfo_data:
+            if is_ipinfo_flagged_as_vpn(ipinfo_data):
+                logging.debug(f"IPInfo flagged {ip} as VPN or Proxy.")
+                return "Yes"
+
+        # 3. Check Known VPN Ranges
+        if ip_in_known_vpn_range(ip):
+          logging.debug(f"IP {ip} is in a known VPN range.")
+          return "Yes"
+
+        # 4. Fallback (Not Flagged)
+        logging.debug(f"IP {ip} not detected as VPN.")
+        return "No"
+
+    except ValueError:
+        logging.error(f"Invalid IP address: {ip}")
+        return "Unknown"
+    except Exception as e:
+        logging.error(f"An unexpected error occurred while checking VPN status for IP {ip}: {e}")
+        return "Unknown"
+# Helper Functions
+
+def ip_in_cgnat_range(ip):
+    """Checks if an IP address is in a known CGNAT range."""
+    cgnat_ranges = [
+        ipaddress.ip_network('100.64.0.0/10'),  # Standard CGNAT range
+        # Add other CGNAT ranges here if needed (e.g., ipaddress.ip_network('10.0.0.0/8'))
+    ]
+    ip_obj = ipaddress.ip_address(ip)
+    for network in cgnat_ranges:
+        if ip_obj in network:
+            return True
+    return False
+
+def get_ipinfo_data(ip):
+    """Fetches IPInfo data and returns it as a dictionary."""
+    try:
         response = requests.get(f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}", timeout=5)
         response.raise_for_status()
-        data = response.json()
-
-        if data.get("bogon") or data.get("privacy", {}).get("vpn") or data.get("privacy", {}).get("proxy"):
-            return "Yes"
-        return "No"
+        return response.json()
     except requests.RequestException as e:
-        logging.error(f"Error checking VPN status for IP {ip}: {e}")
-        return "Unknown"
+        logging.error(f"Error checking IPInfo data for IP {ip}: {e}")
+        return None
+
+def is_ipinfo_flagged_as_vpn(ipinfo_data):
+    """Checks if IPInfo data indicates VPN or proxy usage."""
+    return (ipinfo_data.get("bogon") or
+            ipinfo_data.get("privacy", {}).get("vpn") or
+            ipinfo_data.get("privacy", {}).get("proxy") or
+            ipinfo_data.get("privacy", {}).get("hosting"))
+
+def ip_in_known_vpn_range(ip):
+    """Checks if an IP address is in a list of known VPN ranges."""
+    global KNOWN_VPN_RANGES
+
+    if not KNOWN_VPN_RANGES:
+      load_known_vpn_ranges("vpn_ip.txt")
+    ip_obj = ipaddress.ip_address(ip)
+    for network in KNOWN_VPN_RANGES:
+        if ip_obj in network:
+            return True
+    return False
+
+def load_known_vpn_ranges(filepath):
+    """Loads known VPN IP ranges from a file."""
+    global KNOWN_VPN_RANGES
+    KNOWN_VPN_RANGES = []
+    try:
+        with open(filepath, 'r') as file:
+            for line in file:
+                line = line.strip()
+                try:
+                    # Try to interpret each line as an IP network (e.g., "103.173.14.0/24")
+                    KNOWN_VPN_RANGES.append(ipaddress.ip_network(line))
+                except ValueError:
+                    try:
+                        # If not a network, try to interpret it as a single IP address (e.g., "103.173.14.1")
+                        KNOWN_VPN_RANGES.append(ipaddress.ip_network(line + "/32"))  # /32 means a single IP
+                    except ValueError:
+                        logging.warning(f"Invalid IP address or network in file: {line}")
+    except FileNotFoundError:
+        logging.error(f"File not found: {filepath}")
+
+# Call to load the file
+load_known_vpn_ranges("vpn_ip.txt")
 
 
 def get_existing_entries(class_name):
