@@ -156,37 +156,6 @@ def load_known_vpn_ranges(filepath):
 load_known_vpn_ranges("vpn_ip.txt")
 
 
-def get_existing_entries(class_name):
-    """Fetch attendance data from GitHub and return existing student rolls and sha."""
-    file_path = f"attendance_{class_name}.csv"
-    url = f"{GITHUB_API_BASE}/{file_path}?ref=main"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        logging.debug(f"get_existing_entries(): Response from GitHub: {response.status_code}")
-        if response.status_code == 404:
-            logging.info(f"File for class {class_name} not found on GitHub.")
-            return set(), None  # No file exists yet
-
-        response.raise_for_status()
-        content = response.json()
-        sha = content.get("sha")
-        file_data = base64.b64decode(content["content"]).decode("utf-8")
-
-        existing_rolls = set()
-        lines = file_data.strip().split("\n")[1:]  # Skip header
-        for line in lines:
-            parts = line.split(", ")
-            if len(parts) >= 9:
-                existing_rolls.add(parts[1].strip())  # Student Roll
-
-        return existing_rolls, sha
-    except requests.RequestException as e:
-        logging.error(f"Error fetching data from GitHub: {e}")
-        raise InvalidUsage(f"Error fetching data from GitHub: {e}", 500)
-
-
 def create_new_file(class_name, new_entry):
     """Create a new attendance CSV file on GitHub."""
     file_path = f"attendance_{class_name}.csv"
@@ -211,39 +180,104 @@ def create_new_file(class_name, new_entry):
         raise InvalidUsage(f"Error creating file on GitHub: {e}", 500)
 
 
-def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, lat, lng, time):
-    """Update attendance while preventing duplicates."""
-    existing_rolls, sha = get_existing_entries(class_name)
+import datetime
 
-    if student_roll in existing_rolls:
-        raise InvalidUsage("Duplicate entry detected", 409)
-
-    new_entry = f"{student_name}, {student_roll}, {class_name}, {qr_code}, {lat}, {lng}, {time}, {vpn_status}, {gps_status}, {ip}\n"
-
-    if sha is None:  # File doesn't exist, so create a new one
-        create_new_file(class_name, new_entry)
-        return True
-
-    file_path = f"attendance_{class_name}.csv"
-    url = f"{GITHUB_API_BASE}/{file_path}"
-
-    # Fetch existing data correctly
-    existing_data = CSV_HEADER
+def add_to_defaulters(class_name, entry):
+    """Adds an entry to the defaulters list file."""
+    defaulters_file_path = f"defaulters_{class_name}.csv"
+    url = f"{GITHUB_API_BASE}/{defaulters_file_path}"
 
     try:
+        # Check if the file exists to fetch the current sha
         response = requests.get(url, headers={"Authorization": f"token {GITHUB_TOKEN}"})
+        if response.status_code == 200:
+            content = response.json()
+            sha = content.get("sha")
+            existing_content = base64.b64decode(content["content"]).decode("utf-8")
+        else:
+            sha = None
+            existing_content = CSV_HEADER  # Add the header if the file does not exist yet
+
+        new_data = existing_content + entry
+
+        encoded_data = base64.b64encode(new_data.encode("utf-8")).decode("utf-8")
+
+        payload = {
+            "message": f"Added defaulter for {class_name}",
+            "content": encoded_data,
+            "branch": "main"
+        }
+        if sha:
+            payload["sha"] = sha  # Update existing file
+
+        response = requests.put(url, headers={"Authorization": f"token {GITHUB_TOKEN}"}, json=payload, timeout=10)
         response.raise_for_status()
-        content = response.json()
-        existing_content = base64.b64decode(content["content"]).decode("utf-8")
-        existing_data += existing_content
+        logging.info(f"Added entry to defaulters for class {class_name}.")
 
     except requests.RequestException as e:
-        logging.error(f"Error fetching file on GitHub: {e}")
-        raise InvalidUsage(f"Error fetching file on GitHub: {e}", 500)
+        logging.error(f"Error adding entry to defaulters list on GitHub: {e}")
+        raise InvalidUsage(f"Error adding entry to defaulters list on GitHub: {e}", 500)
 
-    existing_data += new_entry  # Add new entry at the bottom
+def get_existing_entries(class_name):
+    """Fetch attendance data from GitHub and return existing IPs and sha."""
+    file_path = f"attendance_{class_name}.csv"
+    url = f"{GITHUB_API_BASE}/{file_path}?ref=main"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        logging.debug(f"get_existing_entries(): Response from GitHub: {response.status_code}")
+        if response.status_code == 404:
+            logging.info(f"File for class {class_name} not found on GitHub.")
+            return set(), None, [] # No file exists yet
+
+        response.raise_for_status()
+        content = response.json()
+        sha = content.get("sha")
+        file_data = base64.b64decode(content["content"]).decode("utf-8")
+
+        existing_ips = set()
+        existing_entries = []
+        lines = file_data.strip().split("\n")[1:]  # Skip header
+        for line in lines:
+            parts = line.split(", ")
+            if len(parts) >= 10:
+                existing_ips.add(parts[9].strip())  # IP
+                existing_entries.append(line)  # Add the entire line
+
+        return existing_ips, sha, existing_entries
+    except requests.RequestException as e:
+        logging.error(f"Error fetching data from GitHub: {e}")
+        raise InvalidUsage(f"Error fetching data from GitHub: {e}", 500)
+
+def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_status, gps_status, lat, lng, time):
+    """
+    Update attendance while checking for duplicate IPs.
+    """
+    existing_ips, sha, existing_entries = get_existing_entries(class_name)
+    new_entry = f"{student_name}, {student_roll}, {class_name}, {qr_code}, {lat}, {lng}, {time}, {vpn_status}, {gps_status}, {ip}\n"
+
+    if ip in existing_ips:
+        # Duplicate IP found
+        logging.warning(f"Duplicate IP {ip} found. Adding previous entry to defaulters.")
+        for entry in existing_entries:
+            if entry.split(", ")[9].strip() == ip:
+                add_to_defaulters(class_name, entry)
+                existing_entries.remove(entry)
+    
+    if sha is None:
+        create_new_file(class_name, new_entry)
+        return True
+    
+    file_path = f"attendance_{class_name}.csv"
+    url = f"{GITHUB_API_BASE}/{file_path}"
+    
+    existing_data = CSV_HEADER
+    for entry in existing_entries:
+        existing_data += entry + "\n"
+    existing_data += new_entry
+
     encoded_data = base64.b64encode(existing_data.encode("utf-8")).decode("utf-8")
-
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     payload = {
         "message": f"Updated attendance for {class_name}",
@@ -251,7 +285,7 @@ def update_attendance(class_name, student_name, student_roll, qr_code, ip, vpn_s
         "branch": "main"
     }
     if sha:
-        payload["sha"] = sha  # Needed if file exists
+        payload["sha"] = sha
 
     try:
         response = requests.put(url, headers=headers, json=payload, timeout=10)
