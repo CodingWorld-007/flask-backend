@@ -372,7 +372,7 @@ def submit_attendance():
     auth_header = request.headers.get('Authorization')
     validate_token(auth_header)
 
-    data = request.json
+    data = request.get_json()
     logging.debug(f"Received data: {data}")
 
     student_name = data.get("student_name")
@@ -382,12 +382,19 @@ def submit_attendance():
     lat = data.get("lat")
     lng = data.get("lng")
     time = data.get("time")
-    ip = request.remote_addr
+    ip = data.get("ip_address")  # Access the 'ip_address' from the request body
     gps_status = data.get("gps_status")
 
-    if not student_name or not student_roll or not class_name or not qr_code or not lat or not lng or not time:
+    if not student_name or not student_roll or not class_name or not qr_code or not lat or not lng or not time or not ip or not gps_status:
         logging.warning("Missing required fields in request")
         raise InvalidUsage("Missing required fields", 400)
+    
+     # IP validation
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+    except ValueError:
+        logging.warning(f"Invalid IP format received: ip='{ip}'")
+        raise InvalidUsage("Invalid IP format.", 400)
 
     try:
         float_lat = float(lat)
