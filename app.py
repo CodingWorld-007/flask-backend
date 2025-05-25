@@ -3,6 +3,7 @@ from flask_cors import CORS
 from psycopg2 import pool, errors
 from psycopg2.extras import RealDictCursor
 import logging
+from datetime import datetime  # Import datetime
 
 # Initialize app and CORS
 app = Flask(__name__)
@@ -34,6 +35,7 @@ def mark_attendance():
     data = request.get_json(force=True)
     logging.info(f"Request data: {data}")
 
+    # Ensure required fields are present, including attendance_id
     required_fields = ["class_id", "student_id", "device_id", "gps_lat", "gps_long", "gps_status"]
     if not all(data.get(field) for field in required_fields):
         return jsonify({"error": "Missing required fields."}), 400
@@ -48,10 +50,13 @@ def mark_attendance():
 
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Get the current timestamp
+        current_timestamp = datetime.utcnow()  # Get current UTC time
+
         insert_query = """
-            INSERT INTO attendance (class_id, student_id, device_id, gps_lat, gps_long, gps_status)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING *;
+            INSERT INTO attendance (class_id, student_id, device_id, gps_lat, gps_long, gps_status, timestamp)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING attendance_id, *;  -- Adjusted to return attendance_id
         """
         logging.info("Executing insert query")
         cur.execute(insert_query, (
@@ -60,7 +65,8 @@ def mark_attendance():
             data["device_id"],
             data["gps_lat"],
             data["gps_long"],
-            data["gps_status"]
+            data["gps_status"],
+            current_timestamp  # Include the current timestamp
         ))
         conn.commit()
         result = cur.fetchone()
