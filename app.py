@@ -30,17 +30,17 @@ except Exception as e:
 
 @app.route("/api/attendance", methods=["POST"])
 def mark_attendance():
+    logging.info("Received attendance request")
     data = request.get_json(force=True)
+    logging.info(f"Request data: {data}")
 
-    required_fields = ["class_id", "student_id", "device_id", "gps_lat", "gps_long", "gps_status"]
-    if not all(data.get(field) for field in required_fields):
-        return jsonify({"error": "Missing required fields."}), 400
-
-    conn = None
-    cur = None
+    # your validation code...
 
     try:
+        logging.info("Getting DB connection")
         conn = db_pool.getconn()
+        logging.info("DB connection acquired")
+
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
         insert_query = """
@@ -48,6 +48,7 @@ def mark_attendance():
             VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING *;
         """
+        logging.info("Executing insert query")
         cur.execute(insert_query, (
             data["class_id"],
             data["student_id"],
@@ -58,21 +59,17 @@ def mark_attendance():
         ))
         conn.commit()
         result = cur.fetchone()
+        logging.info(f"Insert successful: {result}")
 
         return jsonify({
             "message": "Attendance recorded successfully.",
             "data": result
         }), 201
 
-    except errors.UniqueViolation:
-        if conn:
-            conn.rollback()
-        return jsonify({"error": "Attendance already marked for this class today."}), 409
-
     except Exception as e:
+        logging.exception("Error in /api/attendance")
         if conn:
             conn.rollback()
-        logging.exception("Unexpected error occurred while recording attendance.")
         return jsonify({"error": "Internal server error."}), 500
 
     finally:
