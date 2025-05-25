@@ -34,7 +34,12 @@ def mark_attendance():
     data = request.get_json(force=True)
     logging.info(f"Request data: {data}")
 
-    # your validation code...
+    required_fields = ["class_id", "student_id", "device_id", "gps_lat", "gps_long", "gps_status"]
+    if not all(data.get(field) for field in required_fields):
+        return jsonify({"error": "Missing required fields."}), 400
+
+    conn = None
+    cur = None
 
     try:
         logging.info("Getting DB connection")
